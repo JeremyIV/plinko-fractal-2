@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plinko Collision Simulator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+        h1 {
+            margin-bottom: 10px;
+            color: #fff;
+        }
+        .controls {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        label {
+            font-size: 14px;
+        }
+        input[type="range"] {
+            width: 120px;
+        }
+        .value-display {
+            min-width: 45px;
+            text-align: right;
+            font-family: monospace;
+        }
+        canvas {
+            border: 2px solid #444;
+            border-radius: 8px;
+            background: #0f0f1a;
+            cursor: crosshair;
+        }
+        .info {
+            margin-top: 15px;
+            font-size: 13px;
+            color: #888;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>Plinko Collision Simulator</h1>
+    <div class="controls">
+        <div class="control-group">
+            <label>Damping:</label>
+            <input type="range" id="damping" min="0" max="1" step="0.01" value="0.5">
+            <span class="value-display" id="dampingValue">0.50</span>
+        </div>
+        <div class="control-group">
+            <label>Peg Radius:</label>
+            <input type="range" id="pegRadius" min="10" max="60" step="1" value="26">
+            <span class="value-display" id="pegRadiusValue">26</span>
+        </div>
+    </div>
+    <canvas id="canvas" width="800" height="600"></canvas>
+    <div class="info">
+        Hover over the colored region to see the ball trajectory from that position.
+    </div>
+    <div id="status" style="margin-top: 10px; color: #888; font-size: 12px;"></div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Physics parameters
+        let damping = 0.5;
+        const gravity = 500; // pixels per second^2 (doesn't affect basin, only animation speed)
+        let pegRadius = 26; // Must be >= 25 (half of pegSpacingX/2) to prevent straight falls
+
+        // Peg array configuration
+        const pegRows = 3;
+        const pegsPerRow = 7;
+        const pegSpacingX = 100;
+        const pegSpacingY = 120;
+        const pegStartY = 200;
+
+        // Generate peg positions in staggered pattern
+        function generatePegs() {
+            const pegs = [];
+            for (let row = 0; row < pegRows; row++) {
+                const rowOffset = (row % 2) * (pegSpacingX / 2); // Stagger every other row
+                const rowPegCount = pegsPerRow - (row % 2); // Alternate rows have one fewer peg
+                const rowStartX = (canvas.width - (rowPegCount - 1) * pegSpacingX) / 2 + rowOffset - (row % 2) * (pegSpacingX / 2);
+                
+                for (let col = 0; col < rowPegCount; col++) {
+                    pegs.push({
+                        x: rowStartX + col * pegSpacingX,
+                        y: pegStartY + row * pegSpacingY
+                    });
+                }
+            }
+            return pegs;
+        }
+
+        let pegs = generatePegs();
+
+        // Bucket configuration (ROYGBIV)
+        const bucketColors = [
+            '#ff0000', // Red
+            '#ff7f00', // Orange
+            '#ffff00', // Yellow
+            '#00ff00', // Green
+            '#0000ff', // Blue
+            '#4b0082', // Indigo
+            '#8b00ff'  // Violet
+        ];
+        const numBuckets = 7;
+        const bucketHeight = 60;
+        const bucketY = canvas.height - bucketHeight - 10;
+
+        function getBucketRects() {
+            const buckets = [];
+            const totalWidth = canvas.width - 40; // margins
+            const bucketWidth = totalWidth / numBuckets;
+            const startX = 20;
+
+            for (let i = 0; i < numBuckets; i++) {
+                buckets.push({
+                    x: startX + i * bucketWidth,
+                    y: bucketY,
+                    width: bucketWidth,
+                    height: bucketHeight,
+                    color: bucketColors[i]
+                });
+            }
+            return buckets;
+        }
+
+        const buckets = getBucketRects();
+
+        // Basin of attraction map
+        let basinImageData = null;
+        let basinNeedsUpdate = true;
+        const topRegionHeight = pegStartY - pegRadius - 20; // Region above pegs
+
+        // Parse hex color to RGB
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : { r: 0, g: 0, b: 0 };
+        }
+
+        // Background color (for misses)
+        const bgColor = hexToRgb('#0f0f1a');
+
+        // Precompute bucket colors as RGB
+        const bucketColorsRgb = bucketColors.map(hexToRgb);
+
+        // Simulate a ball drop from a given position and return the bucket index (-1 if missed)
+        function simulateDrop(startX, startY) {
+            const maxBounces = 50;
+            const maxTime = 20;
+
+            let p0 = { x: startX, y: startY };
+            let v0 = { x: 0, y: 0 }; // Start from rest
+
+            for (let bounce = 0; bounce < maxBounces; bounce++) {
+                const collision = findEarliestCollision(p0, v0);
+                
+                // Find when ball reaches bucket level
+                const bucketHitTime = findBucketHitTime(p0, v0);
+                
+                // Find when trajectory exits canvas sides
+                const exitTime = findCanvasExitTime(p0, v0);
+
+                // Determine what happens first
+                const collisionTime = collision.time !== null ? collision.time : Infinity;
+                
+                if (bucketHitTime < collisionTime && bucketHitTime < exitTime && bucketHitTime < maxTime) {
+                    // Ball reaches bucket level
+                    const finalPos = getPosition(p0, v0, bucketHitTime);
+                    return getBucketIndex(finalPos.x);
+                }
+                
+                if (collisionTime < exitTime && collisionTime < maxTime) {
+                    // Collision with peg
+                    const collisionPos = getPosition(p0, v0, collisionTime);
+                    const collisionVel = getVelocity(v0, collisionTime);
+                    const newVel = computeBounceVelocity(collisionPos, collisionVel, collision.peg);
+                    
+                    const offset = 0.001;
+                    p0 = getPosition(p0, v0, collisionTime + offset);
+                    v0 = newVel;
+                } else {
+                    // Exits canvas - missed
+                    return -1;
+                }
+            }
+            
+            return -1; // Too many bounces
+        }
+
+        // Find when ball reaches bucket level
+        function findBucketHitTime(p0, v0) {
+            // Solve: p0.y + v0.y*t + 0.5*g*t^2 = bucketY
+            const roots = solveQuadratic(
+                0.5 * gravity,
+                v0.y,
+                p0.y - bucketY
+            );
+            
+            for (const t of roots) {
+                if (t > 1e-6) return t;
+            }
+            return Infinity;
+        }
+
+        // Get bucket index from x position
+        function getBucketIndex(x) {
+            for (let i = 0; i < buckets.length; i++) {
+                const bucket = buckets[i];
+                if (x >= bucket.x && x < bucket.x + bucket.width) {
+                    return i;
+                }
+            }
+            return -1; // Missed buckets
+        }
+
+        const statusEl = document.getElementById('status');
+
+        // Compute the basin of attraction image
+        function computeBasinImage() {
+            const startTime = performance.now();
+            statusEl.textContent = 'Computing basin of attraction...';
+            
+            const width = canvas.width;
+            const height = topRegionHeight;
+            
+            basinImageData = ctx.createImageData(width, height);
+            const data = basinImageData.data;
+
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const bucketIdx = simulateDrop(x, y);
+                    const pixelIdx = (y * width + x) * 4;
+                    
+                    if (bucketIdx >= 0 && bucketIdx < bucketColorsRgb.length) {
+                        const color = bucketColorsRgb[bucketIdx];
+                        data[pixelIdx] = color.r;
+                        data[pixelIdx + 1] = color.g;
+                        data[pixelIdx + 2] = color.b;
+                        data[pixelIdx + 3] = 255;
+                    } else {
+                        // Missed - use background color
+                        data[pixelIdx] = bgColor.r;
+                        data[pixelIdx + 1] = bgColor.g;
+                        data[pixelIdx + 2] = bgColor.b;
+                        data[pixelIdx + 3] = 255;
+                    }
+                }
+            }
+            
+            const elapsed = (performance.now() - startTime).toFixed(0);
+            statusEl.textContent = `Basin computed in ${elapsed}ms (${width}x${height} pixels)`;
+            basinNeedsUpdate = false;
+        }
+
+        // Arrow state (represents ball start position and velocity)
+        let arrowTail = { x: 200, y: 80 }; // Start position
+        let arrowHead = { x: 280, y: 120 }; // Head position determines velocity direction/magnitude
+
+        // Dragging state
+        let dragging = null; // 'tail' or 'head'
+        const handleRadius = 12;
+
+        // Hover trajectory mode
+        const showArrowControls = false; // Set to true to re-enable arrow controls
+        let hoverPos = null; // Current hover position in fractal region
+
+        // Update UI controls
+        const dampingSlider = document.getElementById('damping');
+        const pegRadiusSlider = document.getElementById('pegRadius');
+        const dampingValue = document.getElementById('dampingValue');
+        const pegRadiusValue = document.getElementById('pegRadiusValue');
+
+        dampingSlider.addEventListener('input', () => {
+            damping = parseFloat(dampingSlider.value);
+            dampingValue.textContent = damping.toFixed(2);
+            basinNeedsUpdate = true;
+            draw();
+        });
+
+        pegRadiusSlider.addEventListener('input', () => {
+            pegRadius = parseFloat(pegRadiusSlider.value);
+            pegRadiusValue.textContent = pegRadius.toFixed(0);
+            basinNeedsUpdate = true;
+            draw();
+        });
+
+        // Solve quartic equation: a*t^4 + b*t^3 + c*t^2 + d*t + e = 0
+        // Uses numerical root finding with adaptive sampling
+        function solveQuartic(a, b, c, d, e) {
+            // If a is essentially zero, solve as cubic
+            if (Math.abs(a) < 1e-12) {
+                return solveCubic(b, c, d, e);
+            }
+
+            // Normalize
+            b /= a; c /= a; d /= a; e /= a;
+
+            const f = t => t*t*t*t + b*t*t*t + c*t*t + d*t + e;
+            
+            const roots = [];
+            
+            // For physics, we only care about t in [0, ~5] seconds typically
+            // Use bisection for robustness
+            const tMax = 5;
+            const samples = 100;
+            const step = tMax / samples;
+            
+            let prevT = 0;
+            let prevF = f(0);
+            
+            for (let i = 1; i <= samples; i++) {
+                const t = i * step;
+                const fVal = f(t);
+                
+                if (prevF * fVal < 0) {
+                    // Sign change - use bisection to find root
+                    let lo = prevT, hi = t;
+                    let fLo = prevF, fHi = fVal;
+                    
+                    for (let j = 0; j < 40; j++) {
+                        const mid = (lo + hi) / 2;
+                        const fMid = f(mid);
+                        
+                        if (Math.abs(fMid) < 1e-12 || (hi - lo) < 1e-12) {
+                            break;
+                        }
+                        
+                        if (fLo * fMid < 0) {
+                            hi = mid;
+                            fHi = fMid;
+                        } else {
+                            lo = mid;
+                            fLo = fMid;
+                        }
+                    }
+                    
+                    const root = (lo + hi) / 2;
+                    roots.push(root);
+                }
+                
+                prevT = t;
+                prevF = fVal;
+            }
+
+            return roots;
+        }
+
+        function solveCubic(a, b, c, d) {
+            if (Math.abs(a) < 1e-12) {
+                return solveQuadratic(b, c, d);
+            }
+
+            // Normalize
+            b /= a; c /= a; d /= a;
+
+            const p = c - b*b/3;
+            const q = 2*b*b*b/27 - b*c/3 + d;
+            const discriminant = q*q/4 + p*p*p/27;
+
+            const roots = [];
+
+            if (discriminant > 1e-10) {
+                // One real root
+                const sqrtD = Math.sqrt(discriminant);
+                const u = Math.cbrt(-q/2 + sqrtD);
+                const v = Math.cbrt(-q/2 - sqrtD);
+                roots.push(u + v - b/3);
+            } else if (discriminant < -1e-10) {
+                // Three real roots
+                const r = Math.sqrt(-p*p*p/27);
+                const theta = Math.acos(-q/(2*r));
+                const cbrtR = Math.cbrt(r);
+                roots.push(2*cbrtR*Math.cos(theta/3) - b/3);
+                roots.push(2*cbrtR*Math.cos((theta + 2*Math.PI)/3) - b/3);
+                roots.push(2*cbrtR*Math.cos((theta + 4*Math.PI)/3) - b/3);
+            } else {
+                // Double root
+                const u = Math.cbrt(-q/2);
+                roots.push(2*u - b/3);
+                roots.push(-u - b/3);
+            }
+
+            return roots.sort((a, b) => a - b);
+        }
+
+        function solveQuadratic(a, b, c) {
+            if (Math.abs(a) < 1e-12) {
+                if (Math.abs(b) < 1e-12) return [];
+                return [-c/b];
+            }
+
+            const discriminant = b*b - 4*a*c;
+            if (discriminant < 0) return [];
+            if (discriminant === 0) return [-b/(2*a)];
+
+            const sqrtD = Math.sqrt(discriminant);
+            return [(-b - sqrtD)/(2*a), (-b + sqrtD)/(2*a)].sort((a, b) => a - b);
+        }
+
+        // Find collision time between a parabolic trajectory and a circle
+        // Position: p(t) = p0 + v0*t + 0.5*g*t^2
+        // Circle: |p(t) - center|^2 = r^2
+        function findCollisionTime(p0, v0, center, radius) {
+            const gVec = { x: 0, y: gravity };
+            
+            // Relative position
+            const dx = p0.x - center.x;
+            const dy = p0.y - center.y;
+
+            // Coefficients of the quartic |p(t) - center|^2 = r^2
+            // Expanding: (dx + vx*t + 0.5*gx*t^2)^2 + (dy + vy*t + 0.5*gy*t^2)^2 = r^2
+            
+            const gx = gVec.x, gy = gVec.y;
+            const vx = v0.x, vy = v0.y;
+
+            // t^4 coefficient: 0.25*(gx^2 + gy^2)
+            const a4 = 0.25 * (gx*gx + gy*gy);
+            
+            // t^3 coefficient: gx*vx + gy*vy
+            const a3 = gx*vx + gy*vy;
+            
+            // t^2 coefficient: vx^2 + vy^2 + gx*dx + gy*dy
+            const a2 = vx*vx + vy*vy + gx*dx + gy*dy;
+            
+            // t^1 coefficient: 2*(vx*dx + vy*dy)
+            const a1 = 2*(vx*dx + vy*dy);
+            
+            // t^0 coefficient: dx^2 + dy^2 - r^2
+            const a0 = dx*dx + dy*dy - radius*radius;
+
+            const roots = solveQuartic(a4, a3, a2, a1, a0);
+            
+            // Find smallest positive root (with small epsilon to avoid immediate re-collision)
+            const epsilon = 1e-6;
+            for (const t of roots) {
+                if (t > epsilon) {
+                    // Verify this is an entry point (moving toward center)
+                    const pos = getPosition(p0, v0, t);
+                    const vel = getVelocity(v0, t);
+                    const toCenter = { x: center.x - pos.x, y: center.y - pos.y };
+                    const dot = vel.x * toCenter.x + vel.y * toCenter.y;
+                    
+                    // Only count if moving toward center (entering the circle)
+                    if (dot > 0) {
+                        return t;
+                    }
+                }
+            }
+            
+            return null;
+        }
+
+        function getPosition(p0, v0, t) {
+            return {
+                x: p0.x + v0.x * t,
+                y: p0.y + v0.y * t + 0.5 * gravity * t * t
+            };
+        }
+
+        function getVelocity(v0, t) {
+            return {
+                x: v0.x,
+                y: v0.y + gravity * t
+            };
+        }
+
+        // Find earliest collision with any peg
+        function findEarliestCollision(p0, v0) {
+            let earliestTime = null;
+            let collidedPeg = null;
+
+            for (const peg of pegs) {
+                const collisionTime = findCollisionTime(p0, v0, peg, pegRadius);
+                if (collisionTime !== null && (earliestTime === null || collisionTime < earliestTime)) {
+                    earliestTime = collisionTime;
+                    collidedPeg = peg;
+                }
+            }
+
+            return { time: earliestTime, peg: collidedPeg };
+        }
+
+        // Compute velocity after elastic collision with damping
+        function computeBounceVelocity(pos, vel, center) {
+            // Normal pointing outward from circle
+            const nx = (pos.x - center.x) / pegRadius;
+            const ny = (pos.y - center.y) / pegRadius;
+
+            // Decompose velocity into normal and tangential components
+            const vDotN = vel.x * nx + vel.y * ny;
+            
+            // Only bounce if moving into the circle
+            if (vDotN >= 0) {
+                return vel; // Moving away, no bounce needed
+            }
+
+            // Reflect and apply damping to normal component
+            const vnx = vDotN * nx;
+            const vny = vDotN * ny;
+            const vtx = vel.x - vnx;
+            const vty = vel.y - vny;
+
+            // New velocity: tangential + damped reflected normal
+            return {
+                x: vtx - damping * vnx,
+                y: vty - damping * vny
+            };
+        }
+
+        // Compute the full trajectory as an array of segments
+        function computeTrajectory(startPos = null, startVel = null) {
+            const segments = [];
+            const maxBounces = 50;
+            const maxTime = 20; // Maximum time per segment
+
+            // Use provided start position/velocity, or fall back to arrow
+            let p0, v0;
+            if (startPos) {
+                p0 = { ...startPos };
+                v0 = startVel || { x: 0, y: 0 };
+            } else {
+                p0 = { ...arrowTail };
+                v0 = {
+                    x: (arrowHead.x - arrowTail.x) * 2,
+                    y: (arrowHead.y - arrowTail.y) * 2
+                };
+            }
+
+            for (let bounce = 0; bounce < maxBounces; bounce++) {
+                // Find earliest collision with any peg
+                const collision = findEarliestCollision(p0, v0);
+
+                // Find when trajectory exits canvas
+                const exitTime = findCanvasExitTime(p0, v0);
+
+                if (collision.time !== null && collision.time < exitTime && collision.time < maxTime) {
+                    // Collision with peg
+                    const collisionPos = getPosition(p0, v0, collision.time);
+                    const collisionVel = getVelocity(v0, collision.time);
+                    
+                    segments.push({
+                        p0: { ...p0 },
+                        v0: { ...v0 },
+                        duration: collision.time,
+                        endsWithBounce: true
+                    });
+
+                    // Compute new velocity after bounce
+                    const newVel = computeBounceVelocity(collisionPos, collisionVel, collision.peg);
+                    
+                    // Small offset to prevent immediate re-collision
+                    const offset = 0.001;
+                    p0 = getPosition(p0, v0, collision.time + offset);
+                    v0 = newVel;
+                } else {
+                    // No collision, trajectory exits canvas
+                    segments.push({
+                        p0: { ...p0 },
+                        v0: { ...v0 },
+                        duration: Math.min(exitTime, maxTime),
+                        endsWithBounce: false
+                    });
+                    break;
+                }
+            }
+
+            return segments;
+        }
+
+        function findCanvasExitTime(p0, v0) {
+            // Find when trajectory exits the canvas bounds
+            // Check all four edges
+            const times = [];
+            const margin = 50; // Extra margin beyond canvas
+
+            // Bottom edge: p0.y + v0.y*t + 0.5*g*t^2 = canvas.height + margin
+            const bottomRoots = solveQuadratic(
+                0.5 * gravity,
+                v0.y,
+                p0.y - (canvas.height + margin)
+            );
+            times.push(...bottomRoots.filter(t => t > 0));
+
+            // Top edge: p0.y + v0.y*t + 0.5*g*t^2 = -margin
+            const topRoots = solveQuadratic(
+                0.5 * gravity,
+                v0.y,
+                p0.y + margin
+            );
+            times.push(...topRoots.filter(t => t > 0));
+
+            // Left edge: p0.x + v0.x*t = -margin
+            if (Math.abs(v0.x) > 1e-10) {
+                const leftTime = (-margin - p0.x) / v0.x;
+                if (leftTime > 0) times.push(leftTime);
+            }
+
+            // Right edge: p0.x + v0.x*t = canvas.width + margin
+            if (Math.abs(v0.x) > 1e-10) {
+                const rightTime = (canvas.width + margin - p0.x) / v0.x;
+                if (rightTime > 0) times.push(rightTime);
+            }
+
+            return times.length > 0 ? Math.min(...times) : 10;
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Compute basin image if needed
+            if (basinNeedsUpdate || !basinImageData) {
+                computeBasinImage();
+            }
+
+            // Draw basin of attraction map
+            if (basinImageData) {
+                ctx.putImageData(basinImageData, 0, 0);
+            }
+
+            // Draw all pegs
+            for (const peg of pegs) {
+                // Draw peg circle
+                ctx.beginPath();
+                ctx.arc(peg.x, peg.y, pegRadius, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(100, 100, 200, 0.3)';
+                ctx.fill();
+                ctx.strokeStyle = '#6666cc';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Draw center dot
+                ctx.beginPath();
+                ctx.arc(peg.x, peg.y, 3, 0, Math.PI * 2);
+                ctx.fillStyle = '#6666cc';
+                ctx.fill();
+            }
+
+            // Draw buckets (ROYGBIV)
+            for (const bucket of buckets) {
+                ctx.fillStyle = bucket.color;
+                ctx.fillRect(bucket.x, bucket.y, bucket.width, bucket.height);
+                
+                // Add a subtle border
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(bucket.x, bucket.y, bucket.width, bucket.height);
+            }
+
+            // Compute and draw trajectory
+            let segments;
+            let trajectoryStart = null;
+            
+            if (hoverPos && hoverPos.y < topRegionHeight) {
+                // Use hover position (dropped from rest)
+                trajectoryStart = hoverPos;
+                segments = computeTrajectory(hoverPos, { x: 0, y: 0 });
+            } else if (showArrowControls) {
+                // Use arrow controls
+                segments = computeTrajectory();
+            } else {
+                segments = [];
+            }
+            
+            if (segments.length > 0) {
+                ctx.strokeStyle = '#ffaa00';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([]);
+
+                for (const segment of segments) {
+                    ctx.beginPath();
+                    const steps = 100;
+                    for (let i = 0; i <= steps; i++) {
+                        const t = (i / steps) * segment.duration;
+                        const pos = getPosition(segment.p0, segment.v0, t);
+                        
+                        if (i === 0) {
+                            ctx.moveTo(pos.x, pos.y);
+                        } else {
+                            ctx.lineTo(pos.x, pos.y);
+                        }
+                    }
+                    ctx.stroke();
+
+                    // Draw bounce point
+                    if (segment.endsWithBounce) {
+                        const bouncePos = getPosition(segment.p0, segment.v0, segment.duration);
+                        ctx.beginPath();
+                        ctx.arc(bouncePos.x, bouncePos.y, 5, 0, Math.PI * 2);
+                        ctx.fillStyle = '#ff4444';
+                        ctx.fill();
+                    }
+                }
+
+                // Draw starting point indicator
+                if (trajectoryStart) {
+                    ctx.beginPath();
+                    ctx.arc(trajectoryStart.x, trajectoryStart.y, 6, 0, Math.PI * 2);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fill();
+                    ctx.strokeStyle = '#000';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+            }
+
+            // Draw arrow controls (if enabled)
+            if (showArrowControls) {
+                ctx.beginPath();
+                ctx.moveTo(arrowTail.x, arrowTail.y);
+                ctx.lineTo(arrowHead.x, arrowHead.y);
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Arrowhead
+                const angle = Math.atan2(arrowHead.y - arrowTail.y, arrowHead.x - arrowTail.x);
+                const arrowSize = 12;
+                ctx.beginPath();
+                ctx.moveTo(arrowHead.x, arrowHead.y);
+                ctx.lineTo(
+                    arrowHead.x - arrowSize * Math.cos(angle - Math.PI/6),
+                    arrowHead.y - arrowSize * Math.sin(angle - Math.PI/6)
+                );
+                ctx.lineTo(
+                    arrowHead.x - arrowSize * Math.cos(angle + Math.PI/6),
+                    arrowHead.y - arrowSize * Math.sin(angle + Math.PI/6)
+                );
+                ctx.closePath();
+                ctx.fillStyle = '#f44336';
+                ctx.fill();
+
+                // Draw tail handle (start position)
+                ctx.beginPath();
+                ctx.arc(arrowTail.x, arrowTail.y, handleRadius, 0, Math.PI * 2);
+                ctx.fillStyle = '#4CAF50';
+                ctx.fill();
+                ctx.strokeStyle = '#2E7D32';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Draw head handle (velocity control)
+                ctx.beginPath();
+                ctx.arc(arrowHead.x, arrowHead.y, handleRadius, 0, Math.PI * 2);
+                ctx.fillStyle = '#f44336';
+                ctx.fill();
+                ctx.strokeStyle = '#c62828';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Draw velocity info
+                const vel = {
+                    x: (arrowHead.x - arrowTail.x) * 2,
+                    y: (arrowHead.y - arrowTail.y) * 2
+                };
+                ctx.fillStyle = '#888';
+                ctx.font = '12px monospace';
+                ctx.fillText(`Velocity: (${vel.x.toFixed(0)}, ${vel.y.toFixed(0)}) px/s`, 10, 20);
+                ctx.fillText(`Position: (${arrowTail.x.toFixed(0)}, ${arrowTail.y.toFixed(0)})`, 10, 35);
+            }
+        }
+
+        // Mouse interaction
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+        }
+
+        function distance(p1, p2) {
+            return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (!showArrowControls) return;
+            
+            const pos = getMousePos(e);
+            
+            if (distance(pos, arrowTail) < handleRadius + 5) {
+                dragging = 'tail';
+            } else if (distance(pos, arrowHead) < handleRadius + 5) {
+                dragging = 'head';
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            const pos = getMousePos(e);
+            
+            // Handle hover trajectory in fractal region
+            if (pos.y < topRegionHeight) {
+                hoverPos = pos;
+                draw();
+            } else if (hoverPos !== null) {
+                hoverPos = null;
+                draw();
+            }
+            
+            // Handle arrow dragging
+            if (showArrowControls && dragging) {
+                if (dragging === 'tail') {
+                    arrowTail = pos;
+                } else if (dragging === 'head') {
+                    arrowHead = pos;
+                }
+                draw();
+            }
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            dragging = null;
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            dragging = null;
+            if (hoverPos !== null) {
+                hoverPos = null;
+                draw();
+            }
+        });
+
+        // Initial draw
+        draw();
+    </script>
+</body>
+</html>
