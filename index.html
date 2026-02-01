@@ -84,8 +84,8 @@
         </div>
         <div class="control-group">
             <label>Peg Radius:</label>
-            <input type="range" id="pegRadius" min="10" max="60" step="1" value="26">
-            <span class="value-display" id="pegRadiusValue">26</span>
+            <input type="range" id="pegRadius" min="5" max="30" step="1" value="11">
+            <span class="value-display" id="pegRadiusValue">11</span>
         </div>
     </div>
     <div class="canvas-container">
@@ -112,14 +112,14 @@
         // Physics parameters
         let damping = 0.5;
         const gravity = 500.0;
-        let pegRadius = 26.0;
+        let pegRadius = 11.0; // Must be >= 10 (pegSpacingX/4) to prevent straight falls
 
         // Peg array configuration
-        const pegRows = 3;
-        const pegsPerRow = 7;
-        const pegSpacingX = 100;
-        const pegSpacingY = 120;
-        const pegStartY = 200;
+        const pegRows = 4;
+        const pegsPerRow = 20;
+        const pegSpacingX = 40;  // 800px / 20 pins ≈ 40px
+        const pegSpacingY = 50;  // Tighter vertical spacing
+        const pegStartY = 380;   // Push pins down to make room for larger fractal region
 
         function generatePegs() {
             const pegs = [];
@@ -135,7 +135,7 @@
         }
 
         const pegs = generatePegs();
-        const MAX_PEGS = 24;
+        const MAX_PEGS = 80; // Must be >= total pegs (20+19+20+19 = 78 for current config)
 
         const bucketColors = [
             [1.0, 0.0, 0.0], [1.0, 0.5, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
