@@ -466,6 +466,7 @@
         let sampleCount = 0;
         let animationId = null;
         let useAccum1 = true; // Toggle for ping-pong
+        const maxSamples = 300; // Stop after this many samples
 
         // Render one sample
         function renderSample(seed) {
@@ -571,10 +572,14 @@
 
             displayResult();
             
-            document.getElementById('status').textContent = `Progressive AA: ${sampleCount} samples`;
+            document.getElementById('status').textContent = `Progressive AA: ${sampleCount}/${maxSamples} samples`;
 
-            // Continue refining
-            animationId = requestAnimationFrame(progressiveRender);
+            // Continue refining until max samples reached
+            if (sampleCount < maxSamples) {
+                animationId = requestAnimationFrame(progressiveRender);
+            } else {
+                animationId = null;
+            }
         }
 
         // Reset progressive rendering
