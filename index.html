@@ -178,7 +178,7 @@
             uniform vec2 u_resolution;
             
             const int MAX_BOUNCES = 50;
-            const float EPSILON = 0.0001;
+            const float EPSILON = 0.00001;
             
             // Hash function for pseudo-random numbers
             float hash(vec2 p) {
@@ -221,18 +221,18 @@
             float findCollisionTime(vec2 p0, vec2 v0, vec2 center) {
                 float r2 = u_pegRadius * u_pegRadius;
                 float tMax = 3.0;
-                float step = tMax / 50.0;
+                float step = tMax / 100.0; // Finer sampling
                 float prevT = 0.0;
                 float prevD = dot(p0 - center, p0 - center) - r2;
                 
-                for (int i = 1; i <= 50; i++) {
+                for (int i = 1; i <= 100; i++) {
                     float t = float(i) * step;
                     vec2 pos = getPosition(p0, v0, t);
                     float d = dot(pos - center, pos - center) - r2;
                     
                     if (prevD > 0.0 && d < 0.0) {
                         float lo = prevT, hi = t;
-                        for (int j = 0; j < 20; j++) {
+                        for (int j = 0; j < 32; j++) { // More bisection iterations
                             float mid = (lo + hi) * 0.5;
                             vec2 midPos = getPosition(p0, v0, mid);
                             float midD = dot(midPos - center, midPos - center) - r2;
@@ -313,7 +313,8 @@
                         vec2 collisionVel = getVelocity(v0, earliestTime);
                         vec2 pegPos = getPeg(collidedPeg);
                         v0 = computeBounceVelocity(collisionPos, collisionVel, pegPos);
-                        p0 = collisionPos + normalize(collisionPos - pegPos) * 0.1;
+                        // Small offset along normal to prevent re-collision
+                        p0 = collisionPos + normalize(collisionPos - pegPos) * 0.01;
                     } else {
                         return -1;
                     }
@@ -632,17 +633,17 @@
 
         function findCollisionTimeJS(p0, v0, center, radius) {
             const r2 = radius * radius;
-            const tMax = 3, step = tMax / 50;
+            const tMax = 3, step = tMax / 100; // Finer sampling
             let prevT = 0, prevD = (p0.x - center.x)**2 + (p0.y - center.y)**2 - r2;
             
-            for (let i = 1; i <= 50; i++) {
+            for (let i = 1; i <= 100; i++) {
                 const t = i * step;
                 const pos = getPositionJS(p0, v0, t);
                 const d = (pos.x - center.x)**2 + (pos.y - center.y)**2 - r2;
                 
                 if (prevD > 0 && d < 0) {
                     let lo = prevT, hi = t;
-                    for (let j = 0; j < 20; j++) {
+                    for (let j = 0; j < 32; j++) { // More bisection iterations
                         const mid = (lo + hi) / 2;
                         const midPos = getPositionJS(p0, v0, mid);
                         const midD = (midPos.x - center.x)**2 + (midPos.y - center.y)**2 - r2;
@@ -702,8 +703,8 @@
                     v0 = computeBounceVelocityJS(collisionPos, collisionVel, collision.peg);
                     const norm = Math.sqrt((collisionPos.x - collision.peg.x)**2 + (collisionPos.y - collision.peg.y)**2);
                     p0 = {
-                        x: collisionPos.x + (collisionPos.x - collision.peg.x) / norm * 0.1,
-                        y: collisionPos.y + (collisionPos.y - collision.peg.y) / norm * 0.1
+                        x: collisionPos.x + (collisionPos.x - collision.peg.x) / norm * 0.01,
+                        y: collisionPos.y + (collisionPos.y - collision.peg.y) / norm * 0.01
                     };
                 } else {
                     segments.push({ p0: {...p0}, v0: {...v0}, duration: 10, endsWithBounce: false });
