@@ -736,11 +736,13 @@
         let isFastMode = false;
         let interactionTimeout = null;
         const INTERACTION_SETTLE_DELAY = 150; // Switch to high-fidelity after 150ms of no interaction
+        let pendingFastFrame = null;
         
         // Priority system: hover trajectory takes priority over progressive rendering
         let isHovering = false;
         let hoverIdleTimeout = null;
         let pendingHoverRender = null; // requestAnimationFrame ID for throttled hover rendering
+        let pendingOverlayFrame = null;
         const HOVER_IDLE_DELAY = 200; // Resume AA after mouse stops for 200ms
 
         // Render one sample to a target framebuffer at specified resolution
@@ -807,6 +809,22 @@
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         }
         
+        function scheduleFastPreview() {
+            if (pendingFastFrame) return;
+            pendingFastFrame = requestAnimationFrame(() => {
+                pendingFastFrame = null;
+                renderFastPreview();
+            });
+        }
+
+        function scheduleOverlayRender() {
+            if (pendingOverlayFrame) return;
+            pendingOverlayFrame = requestAnimationFrame(() => {
+                pendingOverlayFrame = null;
+                drawOverlay();
+            });
+        }
+
         // Start fast mode for interaction
         function startFastMode() {
             if (!isFastMode) {
@@ -819,8 +837,8 @@
                 clearTimeout(interactionTimeout);
             }
             
-            // Render fast preview
-            renderFastPreview();
+            // Render fast preview (throttled to the next animation frame)
+            scheduleFastPreview();
             
             // Schedule transition back to high-fidelity when interaction settles
             interactionTimeout = setTimeout(() => {
@@ -1489,7 +1507,7 @@
                 
                 // Use fast mode during interaction
                 startFastMode();
-                drawOverlay();
+                scheduleOverlayRender();
                 
                 // Update cursor
                 updateCursor();
@@ -1533,7 +1551,7 @@
                 
                 // Use fast mode during interaction
                 startFastMode();
-                drawOverlay();
+                scheduleOverlayRender();
                 return;
             }
             
@@ -1577,7 +1595,7 @@
                     cancelAnimationFrame(pendingHoverRender);
                     pendingHoverRender = null;
                 }
-                drawOverlay();
+                scheduleOverlayRender();
                 if (hoverIdleTimeout) {
                     clearTimeout(hoverIdleTimeout);
                     hoverIdleTimeout = null;
@@ -1601,7 +1619,7 @@
             if (hoverPos !== null) {
                 hoverPos = null;
                 hoverScreenPos = null;
-                drawOverlay();
+                scheduleOverlayRender();
             }
             // Resume progressive rendering if not complete
             if (sampleCount < maxSamples && !progressiveFrameId) {
