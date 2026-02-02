@@ -52,27 +52,10 @@
             color: #888;
             text-align: center;
         }
-        .controls {
-            margin: 8px 0 2px;
-            font-size: 13px;
-            color: #ccc;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .controls input[type="checkbox"] {
-            transform: scale(1.05);
-        }
     </style>
 </head>
 <body>
     <h1>Plinko Collision Simulator</h1>
-    <div class="controls">
-        <label>
-            <input type="checkbox" id="exactSolverToggle">
-            Exact solver (quartic collisions)
-        </label>
-    </div>
     <div class="canvas-container">
         <canvas id="glCanvas" width="800" height="720"></canvas>
         <canvas id="overlayCanvas" width="800" height="720"></canvas>
@@ -102,8 +85,6 @@
         // Feature flags
         const ENABLE_FRACTAL_RENDERING = true;   // Toggle WebGL basin computation
         const ENABLE_TRAJECTORY_ON_HOVER = true; // Toggle trajectory drawing
-        let useExactSolver = false;
-
         // Zoom and pan state
         let zoomLevel = 1.0;
         const minZoom = 1.0;
@@ -173,8 +154,6 @@
             uniform vec3 u_bgColor;
             uniform float u_seed;
             uniform vec2 u_resolution;
-            uniform int u_exactSolver;
-            
             // Hex grid parameters
             uniform float u_pegSpacingX;
             uniform float u_pegSpacingY;
@@ -463,32 +442,6 @@
                 return clamp((x - u_bucketStartX) / u_bucketTotalWidth, 0.0, 1.0);
             }
             
-            // Check collision with a single peg, returns collision time or -1
-            float checkPegCollision(vec2 p0, vec2 v0, vec2 prevPos, float prevT, vec2 pos, float t, vec2 pegCenter) {
-                float r2 = u_pegRadius * u_pegRadius;
-                float prevD = dot(prevPos - pegCenter, prevPos - pegCenter) - r2;
-                float d = dot(pos - pegCenter, pos - pegCenter) - r2;
-                
-                if (prevD > 0.0 && d < 0.0) {
-                    // Binary search to find exact collision time
-                    float lo = prevT, hi = t;
-                    for (int j = 0; j < 32; j++) {
-                        if (hi - lo < 0.00001) break;  // Early exit when converged
-                        float mid = (lo + hi) * 0.5;
-                        vec2 midPos = getPosition(p0, v0, mid);
-                        float midD = dot(midPos - pegCenter, midPos - pegCenter) - r2;
-                        if (midD > 0.0) lo = mid; else hi = mid;
-                    }
-                    float collisionT = (lo + hi) * 0.5;
-                    vec2 collisionPos = getPosition(p0, v0, collisionT);
-                    vec2 collisionVel = getVelocity(v0, collisionT);
-                    if (dot(collisionVel, pegCenter - collisionPos) > 0.0) {
-                        return collisionT;
-                    }
-                }
-                return -1.0;
-            }
-            
             // Get hex neighbor offset by index (0-5)
             vec2 getHexNeighbor(int idx) {
                 if (idx == 0) return vec2(1.0, 0.0);    // right
@@ -497,58 +450,6 @@
                 if (idx == 3) return vec2(-1.0, 0.0);   // left
                 if (idx == 4) return vec2(-1.0, 1.0);   // lower-left
                 return vec2(0.0, 1.0);                   // lower-right
-            }
-            
-            // Hex-accelerated collision detection
-            // Returns vec3(collisionTime, pegX, pegY) or vec3(-1, 0, 0) if no collision
-            vec3 findEarliestCollisionSampling(vec2 p0, vec2 v0) {
-                float tMax = 3.0;
-                float step = tMax / 100.0;
-                
-                float earliestTime = 1000.0;
-                vec2 collidedPegPos = vec2(0.0);
-                
-                float prevT = 0.0;
-                vec2 prevPos = p0;
-                
-                for (int i = 1; i <= 100; i++) {
-                    float t = float(i) * step;
-                    vec2 pos = getPosition(p0, v0, t);
-                    
-                    // Get hex cell at this position
-                    vec2 hex = pixelToHex(pos);
-                    
-                    // Check center cell
-                    vec3 centerPeg = hexToPixel(hex.x, hex.y);
-                    if (centerPeg.z > 0.5) {
-                        float ct = checkPegCollision(p0, v0, prevPos, prevT, pos, t, centerPeg.xy);
-                        if (ct > EPSILON && ct < earliestTime) {
-                            earliestTime = ct;
-                            collidedPegPos = centerPeg.xy;
-                        }
-                    }
-                    
-                    // Check 6 neighbors (unrolled for WebGL 1.0 compatibility)
-                    for (int n = 0; n < 6; n++) {
-                        vec2 neighborHex = hex + getHexNeighbor(n);
-                        vec3 neighborPeg = hexToPixel(neighborHex.x, neighborHex.y);
-                        if (neighborPeg.z > 0.5) {
-                            float ct = checkPegCollision(p0, v0, prevPos, prevT, pos, t, neighborPeg.xy);
-                            if (ct > EPSILON && ct < earliestTime) {
-                                earliestTime = ct;
-                                collidedPegPos = neighborPeg.xy;
-                            }
-                        }
-                    }
-                    
-                    prevT = t;
-                    prevPos = pos;
-                }
-                
-                if (earliestTime < 100.0) {
-                    return vec3(earliestTime, collidedPegPos);
-                }
-                return vec3(-1.0, 0.0, 0.0);
             }
             
             float solvePegCollisionExact(vec2 p0, vec2 v0, vec2 center) {
@@ -612,7 +513,7 @@
                 vec2 v0 = vec2(0.0);
                 
                 for (int bounce = 0; bounce < MAX_BOUNCES; bounce++) {
-                    vec3 collision = (u_exactSolver == 1) ? findEarliestCollisionExact(p0, v0) : findEarliestCollisionSampling(p0, v0);
+                    vec3 collision = findEarliestCollisionExact(p0, v0);
                     float earliestTime = collision.x;
                     vec2 pegPos = collision.yz;
                     
@@ -784,7 +685,7 @@
             // Zoom and pan uniforms
             zoom: gl.getUniformLocation(simProgram, 'u_zoom'),
             pan: gl.getUniformLocation(simProgram, 'u_pan'),
-            exactSolver: gl.getUniformLocation(simProgram, 'u_exactSolver')
+            
         };
 
         // Get uniform locations for accumulation shader
@@ -873,7 +774,6 @@
             gl.uniform1f(simUniforms.gridOriginX, gridOriginX);
             gl.uniform1i(simUniforms.pegsPerRow, pegsPerRow);
             gl.uniform1i(simUniforms.pegRows, pegRows);
-            gl.uniform1i(simUniforms.exactSolver, useExactSolver ? 1 : 0);
             
             // Zoom and pan uniforms
             gl.uniform1f(simUniforms.zoom, zoomLevel);
@@ -892,8 +792,7 @@
             
             // Update status
             const zoomText = zoomLevel > 1.01 ? ` | Zoom: ${zoomLevel.toFixed(1)}x` : '';
-            const solverText = useExactSolver ? ' | Exact solver' : '';
-            document.getElementById('status').textContent = `Fast preview mode${solverText}${zoomText}`;
+            document.getElementById('status').textContent = `Fast preview mode${zoomText}`;
         }
         
         // Display fast preview result (upscaled to full canvas)
@@ -1017,8 +916,7 @@
             
             const statusSuffix = isHovering ? ' (paused)' : '';
             const zoomText = zoomLevel > 1.01 ? ` | Zoom: ${zoomLevel.toFixed(1)}x` : '';
-            const solverText = useExactSolver ? ' | Exact solver' : '';
-            document.getElementById('status').textContent = `Progressive AA: ${sampleCount}/${maxSamples} samples${statusSuffix}${solverText}${zoomText}`;
+            document.getElementById('status').textContent = `Progressive AA: ${sampleCount}/${maxSamples} samples${statusSuffix}${zoomText}`;
 
             // Continue refining until max samples reached
             if (sampleCount < maxSamples && !isHovering && !isFastMode) {
@@ -1280,93 +1178,6 @@
             return { x: v0.x, y: v0.y + gravity * t };
         }
 
-        function findCollisionTimeJS(p0, v0, center, radius) {
-            const r2 = radius * radius;
-            const tMax = 3, step = tMax / 100; // Finer sampling
-            let prevT = 0, prevD = (p0.x - center.x)**2 + (p0.y - center.y)**2 - r2;
-            
-            for (let i = 1; i <= 100; i++) {
-                const t = i * step;
-                const pos = getPositionJS(p0, v0, t);
-                const d = (pos.x - center.x)**2 + (pos.y - center.y)**2 - r2;
-                
-                if (prevD > 0 && d < 0) {
-                    let lo = prevT, hi = t;
-                    for (let j = 0; j < 32; j++) {
-                        if (hi - lo < 0.00001) break;  // Early exit when converged
-                        const mid = (lo + hi) / 2;
-                        const midPos = getPositionJS(p0, v0, mid);
-                        const midD = (midPos.x - center.x)**2 + (midPos.y - center.y)**2 - r2;
-                        if (midD > 0) lo = mid; else hi = mid;
-                    }
-                    const collisionT = (lo + hi) / 2;
-                    const collisionPos = getPositionJS(p0, v0, collisionT);
-                    const collisionVel = getVelocityJS(v0, collisionT);
-                    const toCenter = { x: center.x - collisionPos.x, y: center.y - collisionPos.y };
-                    if (collisionVel.x * toCenter.x + collisionVel.y * toCenter.y > 0) return collisionT;
-                }
-                prevT = t;
-                prevD = d;
-            }
-            return null;
-        }
-
-        // Hex-accelerated collision detection (sampling + binary search)
-        function findEarliestCollisionSamplingJS(p0, v0) {
-            const r2 = pegRadius * pegRadius;
-            const tMax = 3.0;
-            const numSamples = 100;
-            const step = tMax / numSamples;
-            
-            let earliestTime = null;
-            let collidedPeg = null;
-            
-            let prevT = 0;
-            let prevPos = { ...p0 };
-            
-            for (let i = 1; i <= numSamples; i++) {
-                const t = i * step;
-                const pos = getPositionJS(p0, v0, t);
-                
-                // Get candidate pegs at this position using hex lookup
-                const candidates = getCandidatePegs(pos.x, pos.y);
-                
-                for (const peg of candidates) {
-                    const prevD = (prevPos.x - peg.x)**2 + (prevPos.y - peg.y)**2 - r2;
-                    const d = (pos.x - peg.x)**2 + (pos.y - peg.y)**2 - r2;
-                    
-                    // Check if we crossed into this peg
-                    if (prevD > 0 && d < 0) {
-                        // Binary search to find exact collision time
-                        let lo = prevT, hi = t;
-                        for (let j = 0; j < 32; j++) {
-                            if (hi - lo < 0.00001) break;  // Early exit when converged
-                            const mid = (lo + hi) / 2;
-                            const midPos = getPositionJS(p0, v0, mid);
-                            const midD = (midPos.x - peg.x)**2 + (midPos.y - peg.y)**2 - r2;
-                            if (midD > 0) lo = mid; else hi = mid;
-                        }
-                        const collisionT = (lo + hi) / 2;
-                        const collisionPos = getPositionJS(p0, v0, collisionT);
-                        const collisionVel = getVelocityJS(v0, collisionT);
-                        const toCenter = { x: peg.x - collisionPos.x, y: peg.y - collisionPos.y };
-                        
-                        // Verify ball is moving toward peg
-                        if (collisionVel.x * toCenter.x + collisionVel.y * toCenter.y > 0) {
-                            if (earliestTime === null || collisionT < earliestTime) {
-                                earliestTime = collisionT;
-                                collidedPeg = peg;
-                            }
-                        }
-                    }
-                }
-                
-                prevT = t;
-                prevPos = pos;
-            }
-            
-            return { time: earliestTime, peg: collidedPeg };
-        }
         
         function solvePegCollisionExactJS(p0, v0, center, radius) {
             const dx = p0.x - center.x;
@@ -1408,7 +1219,7 @@
         }
         
         function findEarliestCollisionJS(p0, v0) {
-            return useExactSolver ? findEarliestCollisionExactJS(p0, v0) : findEarliestCollisionSamplingJS(p0, v0);
+            return findEarliestCollisionExactJS(p0, v0);
         }
 
         function computeBounceVelocityJS(pos, vel, center) {
@@ -1696,11 +1507,6 @@
             }
         });
         
-        document.getElementById('exactSolverToggle').addEventListener('change', (e) => {
-            useExactSolver = e.target.checked;
-            resetProgressive();
-            drawOverlay();
-        });
 
         // Initial render
         if (ENABLE_FRACTAL_RENDERING) {
