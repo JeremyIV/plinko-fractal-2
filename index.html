@@ -3,7 +3,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Plinko Collision Simulator</title>
     <style>
         * {
             margin: 0;
@@ -55,16 +54,13 @@
     </style>
 </head>
 <body>
-    <h1>Plinko Collision Simulator</h1>
     <div class="canvas-container">
         <canvas id="glCanvas" width="800" height="720"></canvas>
         <canvas id="overlayCanvas" width="800" height="720"></canvas>
     </div>
     <div class="info">
-        Scroll to zoom in/out. Click and drag to pan when zoomed in. Trajectory preview only shown when fully zoomed out.
+        Scroll to zoom in/out. Click and drag to pan when zoomed in. Zoomed-in hover shows a mini trajectory preview.
     </div>
-    <div id="status" style="margin-top: 10px; color: #888; font-size: 12px;"></div>
-
     <script>
         // ==================== WebGL Setup ====================
         const glCanvas = document.getElementById('glCanvas');
@@ -914,10 +910,6 @@
 
             displayResult();
             
-            const statusSuffix = isHovering ? ' (paused)' : '';
-            const zoomText = zoomLevel > 1.01 ? ` | Zoom: ${zoomLevel.toFixed(1)}x` : '';
-            document.getElementById('status').textContent = `Progressive AA: ${sampleCount}/${maxSamples} samples${statusSuffix}${zoomText}`;
-
             // Continue refining until max samples reached
             if (sampleCount < maxSamples && !isHovering && !isFastMode) {
                 progressiveFrameId = requestAnimationFrame(progressiveRender);
@@ -1060,6 +1052,7 @@
 
         // ==================== 2D Canvas Overlay ====================
         let hoverPos = null;
+        let hoverScreenPos = null;
         const SOLVER_EPS = 1e-8;
         const COLLISION_TMAX = 3.0;
 
@@ -1283,6 +1276,111 @@
             };
         }
 
+        const POPUP_WIDTH = 220;
+        const POPUP_HEIGHT = 180;
+        const POPUP_PADDING = 12;
+        const POPUP_OFFSET = 14;
+        const POPUP_MARGIN = 6;
+
+        function buildRoundedRectPath(x, y, w, h, r) {
+            const radius = Math.min(r, w / 2, h / 2);
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.lineTo(x + w - radius, y);
+            ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+            ctx.lineTo(x + w, y + h - radius);
+            ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+            ctx.lineTo(x + radius, y + h);
+            ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+            ctx.lineTo(x, y + radius);
+            ctx.quadraticCurveTo(x, y, x + radius, y);
+        }
+
+        function drawMiniBoardPopup(worldPos, screenPos) {
+            if (!worldPos || !screenPos) return;
+
+            let popupX = screenPos.x + POPUP_OFFSET;
+            let popupY = screenPos.y - POPUP_OFFSET - POPUP_HEIGHT;
+
+            if (popupX + POPUP_WIDTH > overlayCanvas.width - POPUP_MARGIN) {
+                popupX = overlayCanvas.width - POPUP_WIDTH - POPUP_MARGIN;
+            }
+            if (popupX < POPUP_MARGIN) popupX = POPUP_MARGIN;
+
+            if (popupY < POPUP_MARGIN) {
+                popupY = screenPos.y + POPUP_OFFSET;
+                if (popupY + POPUP_HEIGHT > overlayCanvas.height - POPUP_MARGIN) {
+                    popupY = overlayCanvas.height - POPUP_HEIGHT - POPUP_MARGIN;
+                }
+            }
+
+            ctx.save();
+            ctx.fillStyle = 'rgba(15, 15, 26, 0.95)';
+            ctx.strokeStyle = '#4b4b66';
+            ctx.lineWidth = 1;
+            buildRoundedRectPath(popupX, popupY, POPUP_WIDTH, POPUP_HEIGHT, 8);
+            ctx.fill();
+            ctx.stroke();
+
+            const innerX = popupX + POPUP_PADDING;
+            const innerY = popupY + POPUP_PADDING;
+            const innerW = POPUP_WIDTH - POPUP_PADDING * 2;
+            const innerH = POPUP_HEIGHT - POPUP_PADDING * 2;
+
+            const scale = Math.min(innerW / glCanvas.width, innerH / glCanvas.height);
+            const boardW = glCanvas.width * scale;
+            const boardH = glCanvas.height * scale;
+            const boardX = innerX + (innerW - boardW) / 2;
+            const boardY = innerY + (innerH - boardH) / 2;
+
+            // Draw pegs
+            for (const peg of pegs) {
+                ctx.beginPath();
+                ctx.arc(boardX + peg.x * scale, boardY + peg.y * scale, Math.max(0.6, pegRadius * scale), 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(100, 100, 200, 0.3)';
+                ctx.fill();
+                ctx.strokeStyle = '#6666cc';
+                ctx.lineWidth = Math.max(0.6, 1.5 * scale);
+                ctx.stroke();
+            }
+
+            if (worldPos.y < topRegionHeight && !isInsidePeg(worldPos.x, worldPos.y)) {
+                const segments = computeTrajectory(worldPos);
+                ctx.strokeStyle = '#ffaa00';
+                ctx.lineWidth = Math.max(0.8, 2.0 * scale);
+
+                for (const segment of segments) {
+                    ctx.beginPath();
+                    for (let i = 0; i <= 80; i++) {
+                        const t = (i / 80) * segment.duration;
+                        const pos = getPositionJS(segment.p0, segment.v0, t);
+                        const px = boardX + pos.x * scale;
+                        const py = boardY + pos.y * scale;
+                        if (i === 0) ctx.moveTo(px, py);
+                        else ctx.lineTo(px, py);
+                    }
+                    ctx.stroke();
+                    if (segment.endsWithBounce) {
+                        const bouncePos = getPositionJS(segment.p0, segment.v0, segment.duration);
+                        ctx.beginPath();
+                        ctx.arc(boardX + bouncePos.x * scale, boardY + bouncePos.y * scale, Math.max(0.6, 2.6 * scale), 0, Math.PI * 2);
+                        ctx.fillStyle = '#ff4444';
+                        ctx.fill();
+                    }
+                }
+
+                ctx.beginPath();
+                ctx.arc(boardX + worldPos.x * scale, boardY + worldPos.y * scale, Math.max(0.7, 3.0 * scale), 0, Math.PI * 2);
+                ctx.fillStyle = '#ffffff';
+                ctx.fill();
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = Math.max(0.6, 1.6 * scale);
+                ctx.stroke();
+            }
+
+            ctx.restore();
+        }
+
         function drawOverlay() {
             ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
             
@@ -1308,7 +1406,7 @@
                 ctx.fill();
             }
             
-            // Only show trajectory when fully zoomed out
+            // Only show trajectory on main board when fully zoomed out
             if (isFullyZoomedOut() && hoverPos && hoverPos.y < topRegionHeight && !isInsidePeg(hoverPos.x, hoverPos.y)) {
                 const segments = computeTrajectory(hoverPos);
                 ctx.strokeStyle = '#ffaa00';
@@ -1342,6 +1440,11 @@
             }
             
             ctx.restore();
+
+            // Show mini preview popup when zoomed in
+            if (!isFullyZoomedOut() && hoverPos && hoverScreenPos && !isPanning) {
+                drawMiniBoardPopup(hoverPos, hoverScreenPos);
+            }
         }
 
         // ==================== Event Handlers ====================
@@ -1395,11 +1498,7 @@
 
         // ==================== Pan Handlers ====================
         function updateCursor() {
-            if (isFullyZoomedOut()) {
-                overlayCanvas.style.cursor = 'crosshair';
-            } else {
-                overlayCanvas.style.cursor = isPanning ? 'grabbing' : 'grab';
-            }
+            overlayCanvas.style.cursor = 'crosshair';
         }
 
         overlayCanvas.addEventListener('mousedown', (e) => {
@@ -1442,12 +1541,13 @@
             const worldPos = screenToWorld(screenPos.x, screenPos.y);
             
             // Only enable trajectory hover when fully zoomed out
-            if (ENABLE_TRAJECTORY_ON_HOVER && isFullyZoomedOut() && worldPos.y < topRegionHeight) {
+            if (ENABLE_TRAJECTORY_ON_HOVER && worldPos.y < topRegionHeight) {
                 // Set hover state and IMMEDIATELY cancel any pending progressive rendering
                 isHovering = true;
                 cancelProgressiveRender();
                 
                 hoverPos = worldPos;
+                hoverScreenPos = screenPos;
                 
                 // Clear any pending idle timeout for resuming
                 if (hoverIdleTimeout) {
@@ -1472,6 +1572,7 @@
             } else if (hoverPos !== null) {
                 isHovering = false;
                 hoverPos = null;
+                hoverScreenPos = null;
                 if (pendingHoverRender) {
                     cancelAnimationFrame(pendingHoverRender);
                     pendingHoverRender = null;
@@ -1499,6 +1600,7 @@
             }
             if (hoverPos !== null) {
                 hoverPos = null;
+                hoverScreenPos = null;
                 drawOverlay();
             }
             // Resume progressive rendering if not complete
