@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
         * {
             margin: 0;
@@ -18,6 +18,8 @@
             background: #1a1a2e;
             color: #eee;
             min-height: 100vh;
+            overscroll-behavior: none;
+            touch-action: manipulation;
         }
         h1 {
             margin-bottom: 10px;
@@ -25,9 +27,9 @@
         }
         .canvas-container {
             position: relative;
-            width: calc(100vw - 60px);
+            width: calc(100vw - 40px);
             max-width: 800px;
-            height: 720px;
+            aspect-ratio: 800 / 720;
         }
         canvas {
             position: absolute;
@@ -37,6 +39,7 @@
             height: 100%;
             border: 2px solid #444;
             border-radius: 8px;
+            touch-action: none;
         }
         #glCanvas {
             background: #0f0f1a;
@@ -51,6 +54,11 @@
             color: #888;
             text-align: center;
         }
+        @media (max-width: 600px) {
+            body { padding: 10px; }
+            .canvas-container { width: calc(100vw - 20px); }
+            .info { font-size: 12px; padding: 0 8px; }
+        }
     </style>
 </head>
 <body>
@@ -59,7 +67,8 @@
         <canvas id="overlayCanvas" width="800" height="720"></canvas>
     </div>
     <div class="info">
-        Scroll to zoom in/out. Click and drag to pan when zoomed in. Zoomed-in hover shows a mini trajectory preview.
+        <span id="status"></span>
+        Scroll/pinch to zoom. Drag to pan when zoomed. Hover/touch for trajectory preview.
     </div>
     <script>
         // ==================== WebGL Setup ====================
@@ -790,7 +799,8 @@
             
             // Update status
             const zoomText = zoomLevel > 1.01 ? ` | Zoom: ${zoomLevel.toFixed(1)}x` : '';
-            document.getElementById('status').textContent = `Fast preview mode${zoomText}`;
+            const statusEl = document.getElementById('status');
+            if (statusEl) statusEl.textContent = `Fast preview mode${zoomText}`;
         }
         
         // Display fast preview result (upscaled to full canvas)
@@ -1627,6 +1637,163 @@
             }
         });
         
+
+        // ==================== Touch Handlers ====================
+        let touchState = {
+            type: null, // 'pan', 'pinch', 'hover'
+            initialPinchDist: 0,
+            initialZoom: 1,
+            pinchCenterWorld: null,
+            lastSingleTouch: null,
+        };
+
+        function getTouchPos(touch) {
+            const rect = overlayCanvas.getBoundingClientRect();
+            const scaleX = overlayCanvas.width / rect.width;
+            const scaleY = overlayCanvas.height / rect.height;
+            return {
+                x: (touch.clientX - rect.left) * scaleX,
+                y: (touch.clientY - rect.top) * scaleY
+            };
+        }
+
+        function getPinchDistance(t1, t2) {
+            const dx = t1.clientX - t2.clientX;
+            const dy = t1.clientY - t2.clientY;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        function getPinchCenter(t1, t2) {
+            const rect = overlayCanvas.getBoundingClientRect();
+            const scaleX = overlayCanvas.width / rect.width;
+            const scaleY = overlayCanvas.height / rect.height;
+            return {
+                x: ((t1.clientX + t2.clientX) / 2 - rect.left) * scaleX,
+                y: ((t1.clientY + t2.clientY) / 2 - rect.top) * scaleY
+            };
+        }
+
+        overlayCanvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            const touches = e.touches;
+
+            if (touches.length === 2) {
+                touchState.type = 'pinch';
+                touchState.initialPinchDist = getPinchDistance(touches[0], touches[1]);
+                touchState.initialZoom = zoomLevel;
+                const pc = getPinchCenter(touches[0], touches[1]);
+                touchState.pinchCenterWorld = screenToWorld(pc.x, pc.y);
+
+                isHovering = false;
+                hoverPos = null;
+                hoverScreenPos = null;
+            } else if (touches.length === 1) {
+                const screenPos = getTouchPos(touches[0]);
+                if (!isFullyZoomedOut()) {
+                    touchState.type = 'pan';
+                    touchState.lastSingleTouch = screenPos;
+                    isPanning = true;
+                } else {
+                    touchState.type = 'hover';
+                    const worldPos = screenToWorld(screenPos.x, screenPos.y);
+                    isHovering = true;
+                    cancelProgressiveRender();
+                    hoverPos = worldPos;
+                    hoverScreenPos = screenPos;
+                    scheduleOverlayRender();
+                }
+            }
+        }, { passive: false });
+
+        overlayCanvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const touches = e.touches;
+
+            if (touches.length === 2 && touchState.type === 'pinch') {
+                const newDist = getPinchDistance(touches[0], touches[1]);
+                const scale = newDist / touchState.initialPinchDist;
+                const newZoom = Math.max(minZoom, Math.min(maxZoom, touchState.initialZoom * scale));
+
+                if (newZoom !== zoomLevel) {
+                    const centerX = overlayCanvas.width / 2;
+                    const centerY = overlayCanvas.height / 2;
+                    const worldPt = touchState.pinchCenterWorld;
+                    const screenPt = getPinchCenter(touches[0], touches[1]);
+
+                    panX = worldPt.x - centerX - (screenPt.x - centerX) / newZoom;
+                    panY = worldPt.y - centerY - (screenPt.y - centerY) / newZoom;
+                    zoomLevel = newZoom;
+
+                    if (isFullyZoomedOut()) {
+                        panX = 0;
+                        panY = 0;
+                    }
+
+                    startFastMode();
+                    scheduleOverlayRender();
+                }
+            } else if (touches.length === 1) {
+                const screenPos = getTouchPos(touches[0]);
+
+                if (touchState.type === 'pan' && !isFullyZoomedOut()) {
+                    const dx = (screenPos.x - touchState.lastSingleTouch.x) / zoomLevel;
+                    const dy = (screenPos.y - touchState.lastSingleTouch.y) / zoomLevel;
+                    panX -= dx;
+                    panY -= dy;
+                    touchState.lastSingleTouch = screenPos;
+
+                    startFastMode();
+                    scheduleOverlayRender();
+                } else if (touchState.type === 'hover') {
+                    const worldPos = screenToWorld(screenPos.x, screenPos.y);
+                    hoverPos = worldPos;
+                    hoverScreenPos = screenPos;
+
+                    if (!pendingHoverRender) {
+                        pendingHoverRender = requestAnimationFrame(() => {
+                            pendingHoverRender = null;
+                            drawOverlay();
+                        });
+                    }
+                }
+            }
+        }, { passive: false });
+
+        overlayCanvas.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            const touches = e.touches;
+
+            if (touches.length === 0) {
+                if (touchState.type === 'hover') {
+                    isHovering = false;
+                    hoverPos = null;
+                    hoverScreenPos = null;
+                    scheduleOverlayRender();
+                    if (sampleCount < maxSamples && !progressiveFrameId) {
+                        scheduleProgressiveRender();
+                    }
+                }
+                isPanning = false;
+                touchState.type = null;
+            } else if (touches.length === 1 && touchState.type === 'pinch') {
+                // Went from 2 fingers to 1: switch to pan
+                touchState.type = 'pan';
+                touchState.lastSingleTouch = getTouchPos(touches[0]);
+                isPanning = true;
+            }
+        }, { passive: false });
+
+        overlayCanvas.addEventListener('touchcancel', () => {
+            isPanning = false;
+            isHovering = false;
+            hoverPos = null;
+            hoverScreenPos = null;
+            touchState.type = null;
+            scheduleOverlayRender();
+            if (sampleCount < maxSamples && !progressiveFrameId) {
+                scheduleProgressiveRender();
+            }
+        });
 
         // Initial render
         if (ENABLE_FRACTAL_RENDERING) {
