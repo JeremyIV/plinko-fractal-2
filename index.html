@@ -797,10 +797,7 @@
             renderSample(Math.random() * 1000, fbFast, fastWidth, fastHeight);
             displayFastResult();
             
-            // Update status
-            const zoomText = zoomLevel > 1.01 ? ` | Zoom: ${zoomLevel.toFixed(1)}x` : '';
-            const statusEl = document.getElementById('status');
-            if (statusEl) statusEl.textContent = `Fast preview mode${zoomText}`;
+            updateStatus();
         }
         
         // Display fast preview result (upscaled to full canvas)
@@ -962,11 +959,17 @@
             }
         }
 
+        function updateStatus() {
+            const statusEl = document.getElementById('status');
+            if (statusEl) statusEl.textContent = zoomLevel > 1.01 ? `${zoomLevel.toFixed(1)}x` : '';
+        }
+
         // Reset progressive rendering
         function resetProgressive() {
             cancelProgressiveRender();
             sampleCount = 0;
             useAccum1 = true;
+            updateStatus();
             // Start rendering at full speed
             progressiveFrameId = requestAnimationFrame(progressiveRender);
         }
@@ -1411,7 +1414,8 @@
 
         function drawOverlay() {
             ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-            
+            updateStatus();
+
             // Save context and apply zoom/pan transformation
             ctx.save();
             const centerX = overlayCanvas.width / 2;
