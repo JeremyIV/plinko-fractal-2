@@ -3,6 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Plinko Fractal</title>
+    <meta name="description" content="Where does a plinko ball land? An interactive fractal map of plinko outcomes — each pixel is a drop point, colored by where the ball ends up. Zoom in to explore the infinite boundary.">
+    <link rel="canonical" href="https://jeremyiv.github.io/plinko-fractal-2/">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎱</text></svg>">
+
+    <!-- Link preview / social cards -->
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Plinko Fractal">
+    <meta property="og:description" content="Where does a plinko ball land? Each pixel is a drop point, colored by where the ball ends up. Zoom in to explore the infinite boundary.">
+    <meta property="og:url" content="https://jeremyiv.github.io/plinko-fractal-2/">
+    <meta property="og:image" content="https://jeremyiv.github.io/plinko-fractal-2/preview.jpg">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="1114">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Plinko Fractal">
+    <meta name="twitter:description" content="Where does a plinko ball land? Each pixel is a drop point, colored by where the ball ends up. Zoom in to explore the infinite boundary.">
+    <meta name="twitter:image" content="https://jeremyiv.github.io/plinko-fractal-2/preview.jpg">
     <style>
         * {
             margin: 0;
@@ -20,10 +37,6 @@
             min-height: 100vh;
             overscroll-behavior: none;
             touch-action: manipulation;
-        }
-        h1 {
-            margin-bottom: 10px;
-            color: #fff;
         }
         .canvas-container {
             position: relative;
@@ -80,6 +93,7 @@
 
         if (!gl) {
             alert('WebGL not supported');
+            throw new Error('WebGL not supported');
         }
 
         // Physics parameters
@@ -126,7 +140,6 @@
         }
 
         const pegs = generatePegs();
-        const MAX_PEGS = 50; // Must be >= total pegs (10+9+10+9+10 = 48 for current config)
 
         // Simulation boundaries
         const bucketY = glCanvas.height;  // Bottom of canvas where balls land
